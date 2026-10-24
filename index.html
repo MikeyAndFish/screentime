@@ -12,12 +12,17 @@
   .card{background:#fff;border-radius:12px;padding:16px;margin-bottom:14px;box-shadow:0 2px 6px rgba(0,0,0,.08)}
   button{background:#4f46e5;color:#fff;border:none;border-radius:8px;padding:10px 14px;font-size:15px;cursor:pointer;margin:4px 4px 4px 0}
   button.gray{background:#888} button.red{background:#dc2626} button.green{background:#16a34a}
+  button.wide{display:block;width:100%;padding:14px;font-size:17px}
   input,select,textarea{width:100%;padding:10px;font-size:15px;border:1px solid #ccc;border-radius:8px;margin:6px 0 10px;box-sizing:border-box}
+  input[type=checkbox]{width:auto;margin:0 8px 0 0}
+  label.check{display:flex;align-items:center;margin:8px 0;font-size:14px}
   .balance{font-size:48px;font-weight:bold;color:#4f46e5;text-align:center}
   .timer{font-size:48px;font-weight:bold;color:#16a34a;text-align:center}
-  img.proof{max-width:100%;border-radius:8px;margin:8px 0}
+  .code{font-size:34px;letter-spacing:6px;font-weight:bold;text-align:center;color:#4f46e5;background:#eef;border-radius:8px;padding:10px;margin:8px 0}
+  img.proof{max-width:100%;border-radius:8px;margin:8px 0;background:#eee;min-height:40px}
   .row{display:flex;justify-content:space-between;align-items:center;border-bottom:1px solid #eee;padding:8px 0;gap:8px}
   .muted{color:#777;font-size:13px}
+  .center{text-align:center}
   .pending{color:#d97706}.approved{color:#16a34a}.rejected{color:#dc2626}
   .plus{color:#16a34a;font-weight:bold}.minus{color:#dc2626;font-weight:bold}
 </style>
@@ -25,387 +30,116 @@
 <body>
 <header>
   <h1>⏱️ ScreenTime Bank</h1>
-  <button id="homeBtn" class="gray" onclick="logout()" style="display:none">Switch user</button>
+  <button id="outBtn" class="gray" onclick="logout()" style="display:none">Log out</button>
 </header>
 <main id="app"></main>
 
 <script>
-// ---------- DATA ----------
-const KEY = 'screentimeBank';
-const DEFAULT_TASKS = [
-  { id: 't1', name: '📚 Homework', minutes: 20 },
-  { id: 't2', name: '🧹 Dishes', minutes: 15 },
-  { id: 't3', name: '🛏️ Make bed', minutes: 10 },
-  { id: 't4', name: '📖 Reading (30 min)', minutes: 20 }
-];
-let db = Object.assign(
-  { pin: null, kids: [], subs: [], log: [], tasks: DEFAULT_TASKS, dailyLimit: 120, timers: {} },
-  JSON.parse(localStorage.getItem(KEY)) || {}
-);
-let user = null;
+// ---------- SETUP ----------
+const SKEY = 'stbSession';
+let session = JSON.parse(localStorage.getItem(SKEY) || 'null'); // {token, role, kidName}
+let state = null;        // data loaded from the server
+let screen = 'welcome';  // which screen to show when logged out
+let joinInfo = null;     // kid join step 2 info
+let photoCache = {};
+let sending = false;
 
 const app = document.getElementById('app');
 const $ = id => document.getElementById(id);
-const save = () => localStorage.setItem(KEY, JSON.stringify(db));
 const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
-const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 6);
-const kid = id => db.kids.find(k => k.id === id);
 const when = t => new Date(t).toLocaleString();
-const fmt = ms => `${Math.floor(ms / 60000)}:${String(Math.floor(ms % 60000 / 1000)).padStart(2, '0')}`;
+const fmt = ms => { ms = Math.max(0, ms); return `${Math.floor(ms / 60000)}:${String(Math.floor(ms % 60000 / 1000)).padStart(2, '0')}`; };
+const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
 
-function addMinutes(kidId, delta, reason, type = 'adjust') {
-  const k = kid(kidId);
-  if (!k) return;
-  const actual = Math.max(-k.balance, delta);
-  k.balance += actual;
-  db.log.unshift({ kidId, delta: actual, reason, type, date: Date.now() });
-  save();
-}
-
-function usedToday(kidId) {
-  const today = new Date().toDateString();
-  return db.log
-    .filter(l => l.kidId === kidId && (l.type === 'spend' || l.type === 'refund')
-                 && new Date(l.date).toDateString() === today)
-    .reduce((sum, l) => sum - l.delta, 0);
-}
-
-function resizeImage(file, done) {
-  const reader = new FileReader();
-  reader.onload = e => {
-    const img = new Image();
-    img.onload = () => {
-      const scale = Math.min(1, 600 / Math.max(img.width, img.height));
-      const c = document.createElement('canvas');
-      c.width = img.width * scale; c.height = img.height * scale;
-      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-      done(c.toDataURL('image/jpeg', 0.6));
-    };
-    img.src = e.target.result;
-  };
-  reader.readAsDataURL(file);
-}
-
-// ---------- TIMER ----------
-function beep() {
+// ---------- TALK TO THE SERVER ----------
+async function api(path, payload) {
   try {
-    const a = new (window.AudioContext || window.webkitAudioContext)();
-    const o = a.createOscillator();
-    o.connect(a.destination); o.frequency.value = 880;
-    o.start(); setTimeout(() => o.stop(), 1000);
-  } catch (e) {}
+    const r = await fetch(path, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload)
+    });
+    let j;
+    try { j = await r.json(); }
+    catch { j = { error: r.status === 404 ? 'This feature is not set up yet.' : 'Server error (' + r.status + ')' }; }
+    if (!r.ok && !j.error) j.error = 'Server error (' + r.status + ')';
+    if (j.loggedOut) { clearSession(); render(); }
+    return j;
+  } catch (e) {
+    return { error: 'No internet connection. Try again.' };
+  }
 }
 
-setInterval(() => {
-  for (const kidId in db.timers) {
-    const left = db.timers[kidId] - Date.now();
-    if (left <= 0) {
-      delete db.timers[kidId]; save();
-      beep();
-      alert(`⏰ Time's up, ${kid(kidId)?.name || ''}!`);
-      render();
-    } else if ($('countdown') && user?.id === kidId) {
-      $('countdown').textContent = fmt(left);
-    }
+const data = (action, extra = {}) => api('/api/data', { token: session?.token, tz, action, ...extra });
+
+function setSession(r) {
+  session = { token: r.token, role: r.role, kidName: r.kidName || null };
+  localStorage.setItem(SKEY, JSON.stringify(session));
+}
+function clearSession() {
+  session = null; state = null; photoCache = {};
+  localStorage.removeItem(SKEY);
+  screen = 'welcome';
+}
+
+async function refresh() {
+  if (!session) return render();
+  if (!state) app.innerHTML = '<div class="card center">Loading... ⏳</div>';
+  const d = await data('load');
+  if (!session) return render();
+  if (d.error) {
+    app.innerHTML = `<div class="card"><p>⚠️ ${esc(d.error)}</p><button onclick="refresh()">Try again</button></div>`;
+    return;
   }
-}, 1000);
+  state = d;
+  render();
+}
 
 // ---------- SCREENS ----------
 function render() {
-  if (user?.role === 'kid' && !kid(user.id)) user = null;
-  $('homeBtn').style.display = user ? 'block' : 'none';
-  if (!db.pin) return setupScreen();
-  if (!user) return loginScreen();
-  user.role === 'parent' ? parentScreen() : kidScreen();
+  $('outBtn').style.display = session ? 'block' : 'none';
+  if (!session) {
+    if (screen === 'register') return registerScreen();
+    if (screen === 'login') return loginScreen();
+    if (screen === 'join') return joinScreen();
+    return welcomeScreen();
+  }
+  if (!state) return refresh();
+  state.role === 'parent' ? parentScreen() : kidScreen();
 }
 
-function setupScreen() {
+function go(s) { screen = s; joinInfo = null; render(); }
+
+function welcomeScreen() {
   app.innerHTML = `
-    <div class="card">
+    <div class="card center">
       <h2>Welcome! 👋</h2>
-      <p>Parent: create a PIN to protect the parent area.</p>
-      <input id="pin1" type="password" inputmode="numeric" placeholder="Choose a PIN (4+ digits)">
-      <button onclick="setPin()">Save PIN</button>
+      <p>Finish homework and chores, earn screen time.</p>
+      <button class="wide" onclick="go('register')">👨‍👩‍👧 Create a family (parents)</button>
+      <button class="wide gray" onclick="go('login')">🔑 Parent log in</button>
+      <button class="wide green" onclick="go('join')">🧒 I'm a kid</button>
     </div>`;
 }
 
-function setPin() {
-  const p = $('pin1').value.trim();
-  if (p.length < 4) return alert('PIN must be at least 4 digits');
-  db.pin = p; save();
-  user = { role: 'parent' }; render();
-}
-
-function loginScreen() {
+function registerScreen() {
   app.innerHTML = `
     <div class="card">
-      <h2>Who's using the app?</h2>
-      ${db.kids.map(k => `<button onclick="loginKid('${k.id}')">🧒 ${esc(k.name)}</button>`).join('')
-        || '<p class="muted">No kids added yet. Parent, log in to add them.</p>'}
-    </div>
-    <div class="card">
-      <h3>Parent</h3>
-      <input id="pin" type="password" inputmode="numeric" placeholder="Enter PIN">
-      <button onclick="loginParent()">Parent login</button>
+      <h2>Create a family</h2>
+      <p class="muted">For parents and guardians only.</p>
+      <input id="fam" placeholder="Family name (e.g. The Smiths)">
+      <input id="email" type="email" placeholder="Parent email">
+      <input id="pw" type="password" placeholder="Password (8+ characters)">
+      <label class="check"><input id="consent" type="checkbox">
+        I am a parent or guardian and agree to use this app with my children.</label>
+      <button class="wide" onclick="doRegister()">Create family</button>
+      <button class="gray" onclick="go('welcome')">← Back</button>
     </div>`;
 }
 
-function loginKid(id) { user = { role: 'kid', id }; render(); }
-function loginParent() {
-  if ($('pin').value === db.pin) { user = { role: 'parent' }; render(); }
-  else alert('Wrong PIN');
-}
-function logout() { user = null; render(); }
-
-// ---------- KID ----------
-function kidScreen() {
-  const k = kid(user.id);
-  const mine = db.subs.filter(s => s.kidId === k.id);
-  const used = usedToday(k.id);
-  const timerEnd = db.timers[k.id];
-
-  const timePart = timerEnd ? `
-      <p style="text-align:center">⏳ Screen time running</p>
-      <div class="timer" id="countdown">${fmt(Math.max(0, timerEnd - Date.now()))}</div>
-      <button class="red" onclick="stopEarly()">⏹ Stop early (get unused minutes back)</button>`
-    : `
-      <input id="spend" type="number" min="1" placeholder="Minutes to use">
-      <button class="gray" onclick="$('spend').value=10">10</button>
-      <button class="gray" onclick="$('spend').value=20">20</button>
-      <button class="gray" onclick="$('spend').value=30">30</button>
-      <button class="green" onclick="spend()">▶ Start screen time</button>`;
-
-  app.innerHTML = `
-    <div class="card">
-      <h2>Hi ${esc(k.name)}!</h2>
-      <div class="balance">${k.balance} min</div>
-      <p class="muted" style="text-align:center">
-        screen time available<br>
-        Used today: ${used}${db.dailyLimit ? ' / ' + db.dailyLimit : ''} min
-      </p>
-      ${timePart}
-    </div>
-    <div class="card">
-      <h3>📸 Submit a task</h3>
-      <select id="cat">
-        ${db.tasks.map(t => `<option value="${t.id}">${esc(t.name)} (+${t.minutes} min)</option>`).join('')}
-        <option value="other">⭐ Other</option>
-      </select>
-      <textarea id="note" placeholder="What did you do?"></textarea>
-      <input id="photo" type="file" accept="image/*" capture="environment">
-      <button onclick="submitTask()">Send to parent</button>
-    </div>
-    <div class="card">
-      <h3>My submissions</h3>
-      ${mine.map(s => `
-        <div class="row">
-          <div>${esc(s.category)}${s.note ? ' – ' + esc(s.note) : ''}
-            <div class="muted">${when(s.date)}${s.comment ? ' · 💬 ' + esc(s.comment) : ''}</div>
-          </div>
-          <b class="${s.status}">${s.status === 'approved' ? '+' + s.minutes + ' min' : s.status}</b>
-        </div>`).join('') || '<p class="muted">Nothing yet.</p>'}
-    </div>`;
-}
-
-function submitTask() {
-  const file = $('photo').files[0];
-  if (!file) return alert('Please add a photo as proof!');
-  const t = db.tasks.find(x => x.id === $('cat').value);
-  const note = $('note').value.trim();
-  resizeImage(file, photo => {
-    db.subs.unshift({
-      id: uid(), kidId: user.id,
-      category: t ? t.name : '⭐ Other',
-      suggested: t ? t.minutes : 0,
-      note, photo, status: 'pending', minutes: 0, date: Date.now()
-    });
-    try { save(); }
-    catch (e) { db.subs.shift(); return alert('Storage is full. Ask a parent to clear old photos.'); }
-    alert('Sent! Waiting for approval ✅');
-    render();
-  });
-}
-
-function spend() {
-  const m = parseInt($('spend').value);
-  const k = kid(user.id);
-  if (!m || m < 1) return alert('Enter how many minutes');
-  if (m > k.balance) return alert('Not enough minutes!');
-  const used = usedToday(k.id);
-  if (db.dailyLimit && used + m > db.dailyLimit)
-    return alert(`Daily limit reached! You can use ${Math.max(0, db.dailyLimit - used)} more minutes today.`);
-  addMinutes(k.id, -m, 'Used screen time', 'spend');
-  db.timers[k.id] = Date.now() + m * 60000;
-  save();
-  render();
-}
-
-function stopEarly() {
-  const left = db.timers[user.id] - Date.now();
-  const refund = Math.floor(left / 60000);
-  delete db.timers[user.id];
-  if (refund > 0) addMinutes(user.id, refund, 'Stopped early (refund)', 'refund');
-  save();
-  alert(refund > 0 ? `${refund} minutes returned to your bank 👍` : 'Timer stopped');
-  render();
-}
-
-// ---------- PARENT ----------
-function parentScreen() {
-  const pending = db.subs.filter(s => s.status === 'pending');
-  app.innerHTML = `
-    <div class="card">
-      <h2>👨‍👩‍👧 Parent dashboard</h2>
-      <h3>Pending approvals (${pending.length})</h3>
-      ${pending.map(s => `
-        <div class="card">
-          <b>${esc(kid(s.kidId)?.name)}</b> – ${esc(s.category)}
-          <div class="muted">${when(s.date)}</div>
-          ${s.note ? `<p>${esc(s.note)}</p>` : ''}
-          <img class="proof" src="${s.photo}">
-          <input id="c_${s.id}" placeholder="Comment for your kid (optional)">
-          ${s.suggested ? `<button class="green" onclick="approve('${s.id}', ${s.suggested})">✅ Approve +${s.suggested} min</button>` : ''}
-          <button class="green" onclick="approve('${s.id}', 10)">+10</button>
-          <button class="green" onclick="approve('${s.id}', 20)">+20</button>
-          <button class="green" onclick="approve('${s.id}', 30)">+30</button>
-          <input id="m_${s.id}" type="number" min="1" placeholder="Custom minutes">
-          <button onclick="approveCustom('${s.id}')">Approve custom</button>
-          <button class="red" onclick="reject('${s.id}')">❌ Reject</button>
-        </div>`).join('') || '<p class="muted">All caught up! 🎉</p>'}
-    </div>
-
-    <div class="card">
-      <h3>🧒 Kids</h3>
-      ${db.kids.map(k => `
-        <div class="row">
-          <div><b>${esc(k.name)}</b>
-            <div class="muted">${k.balance} min in bank · used ${usedToday(k.id)} today</div>
-          </div>
-          <div style="text-align:right">
-            <input id="b_${k.id}" type="number" placeholder="± min" style="width:90px">
-            <button onclick="bonus('${k.id}')">Apply</button>
-            <button class="red" onclick="removeKid('${k.id}')">✕</button>
-          </div>
-        </div>`).join('') || '<p class="muted">No kids yet.</p>'}
-      <input id="newKid" placeholder="Kid's name">
-      <button onclick="addKid()">+ Add kid</button>
-    </div>
-
-    <div class="card">
-      <h3>📋 Preset tasks</h3>
-      ${db.tasks.map(t => `
-        <div class="row">
-          <div>${esc(t.name)}</div>
-          <div><b>+${t.minutes} min</b>
-            <button class="red" onclick="removeTask('${t.id}')">✕</button>
-          </div>
-        </div>`).join('') || '<p class="muted">No preset tasks.</p>'}
-      <input id="taskName" placeholder="Task name (e.g. 🐶 Walk the dog)">
-      <input id="taskMin" type="number" min="1" placeholder="Minutes earned">
-      <button onclick="addTask()">+ Add task</button>
-    </div>
-
-    <div class="card">
-      <h3>⚙️ Settings</h3>
-      <label>Daily screen time limit (minutes, 0 = no limit)</label>
-      <input id="limit" type="number" min="0" value="${db.dailyLimit}">
-      <button onclick="setLimit()">Save limit</button>
-      <button class="red" onclick="clearPhotos()">🗑 Delete reviewed photos (frees space)</button>
-    </div>
-
-    <div class="card">
-      <h3>📜 History</h3>
-      ${db.log.slice(0, 30).map(l => `
-        <div class="row">
-          <div>${esc(kid(l.kidId)?.name || 'Removed kid')} – ${esc(l.reason)}
-            <div class="muted">${when(l.date)}</div>
-          </div>
-          <span class="${l.delta >= 0 ? 'plus' : 'minus'}">${l.delta >= 0 ? '+' : ''}${l.delta}</span>
-        </div>`).join('') || '<p class="muted">No activity yet.</p>'}
-    </div>`;
-}
-
-function approve(id, m) {
-  const s = db.subs.find(x => x.id === id);
-  if (!s || !m || m < 1) return;
-  s.status = 'approved';
-  s.minutes = m;
-  s.comment = $('c_' + id)?.value.trim() || '';
-  addMinutes(s.kidId, m, 'Approved: ' + s.category, 'earn');
-  render();
-}
-
-function approveCustom(id) {
-  const m = parseInt($('m_' + id).value);
-  if (!m || m < 1) return alert('Enter the number of minutes');
-  approve(id, m);
-}
-
-function reject(id) {
-  const s = db.subs.find(x => x.id === id);
-  if (!s) return;
-  s.status = 'rejected';
-  s.comment = $('c_' + id)?.value.trim() || '';
-  save();
-  render();
-}
-
-function bonus(kidId) {
-  const m = parseInt($('b_' + kidId).value);
-  if (!m) return alert('Enter minutes (use a minus sign to remove, like -15)');
-  addMinutes(kidId, m, m > 0 ? 'Bonus from parent' : 'Removed by parent');
-  render();
-}
-
-function addKid() {
-  const name = $('newKid').value.trim();
-  if (!name) return alert('Enter a name');
-  db.kids.push({ id: uid(), name, balance: 0 });
-  save();
-  render();
-}
-
-function removeKid(id) {
-  if (!confirm(`Remove ${kid(id)?.name} and all their data?`)) return;
-  db.kids = db.kids.filter(k => k.id !== id);
-  db.subs = db.subs.filter(s => s.kidId !== id);
-  db.log = db.log.filter(l => l.kidId !== id);
-  delete db.timers[id];
-  save();
-  render();
-}
-
-function addTask() {
-  const name = $('taskName').value.trim();
-  const minutes = parseInt($('taskMin').value);
-  if (!name || !minutes || minutes < 1) return alert('Enter a task name and minutes');
-  db.tasks.push({ id: uid(), name, minutes });
-  save();
-  render();
-}
-
-function removeTask(id) {
-  db.tasks = db.tasks.filter(t => t.id !== id);
-  save();
-  render();
-}
-
-function setLimit() {
-  const v = parseInt($('limit').value);
-  db.dailyLimit = isNaN(v) || v < 0 ? 0 : v;
-  save();
-  alert('Daily limit saved');
-  render();
-}
-
-function clearPhotos() {
-  if (!confirm('Delete photos from approved and rejected tasks? (History stays.)')) return;
-  db.subs.forEach(s => { if (s.status !== 'pending') s.photo = ''; });
-  save();
-  render();
-}
-
-render();
-</script>
-</body>
-</html>
+async function doRegister() {
+  const r = await api('/api/auth', {
+    action: 'register',
+    familyName: $('fam').value,
+    email: $('email').value,
+    password: $('pw').value,
+    consent: $('
