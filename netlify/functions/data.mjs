@@ -1,7 +1,5 @@
 import { getStore } from "@netlify/blobs";
-import crypto from "node:crypto";
 
-// "strong" means you always read the newest data right after saving
 const store = (name) => getStore({ name, consistency: "strong" });
 const json = (data, status = 200) => Response.json(data, { status });
 
@@ -30,7 +28,7 @@ async function getLog() {
 async function addLog(entry) {
   const log = await getLog();
   log.unshift({ ...entry, date: Date.now() });
-  await store("settings").setJSON("log", log.slice(0, 300)); // keep the newest 300
+  await store("settings").setJSON("log", log.slice(0, 300));
 }
 
 async function getBalance(kid) {
@@ -38,12 +36,11 @@ async function getBalance(kid) {
 }
 async function changeBalance(kid, delta, reason, type = "adjust") {
   const current = await getBalance(kid);
-  const actual = Math.max(-current, delta); // never below 0
+  const actual = Math.max(-current, delta);
   await store("balances").setJSON(kid, current + actual);
   await addLog({ kid, delta: actual, reason, type });
 }
 
-// Minutes used today, in the family's time zone
 function usedToday(log, kid, tz) {
   const day = (t) => new Date(t).toLocaleDateString("en-US", { timeZone: tz });
   const today = day(Date.now());
@@ -86,7 +83,7 @@ export default async (req) => {
       const { blobs } = await subStore.list();
       const subs = (await Promise.all(blobs.map((b) => subStore.get(b.key, { type: "json" }))))
         .filter(Boolean)
-        .map(({ token, ...rest }) => rest) // never send the secret email token to phones
+        .map(({ token, ...rest }) => rest)
         .sort((a, b) => b.date - a.date)
         .slice(0, 50);
 
@@ -181,4 +178,30 @@ export default async (req) => {
     }
 
     case "addTask": {
-      const name = String(body.name || "").trim().slice(
+      const name = String(body.name || "").trim().slice(0, 40);
+      const minutes = parseInt(body.minutes);
+      if (!name || !minutes || minutes < 1) return json({ error: "Enter a task name and minutes" }, 400);
+      s.tasks.push({ id: "t" + Date.now(), name, minutes, autoApprove: !!body.autoApprove });
+      await saveSettings(s);
+      return json({ ok: true });
+    }
+
+    case "removeTask": {
+      s.tasks = s.tasks.filter((t) => t.id !== body.id);
+      await saveSettings(s);
+      return json({ ok: true });
+    }
+
+    case "setLimit": {
+      const v = parseInt(body.limit);
+      s.dailyLimit = isNaN(v) || v < 0 ? 0 : v;
+      await saveSettings(s);
+      return json({ ok: true });
+    }
+
+    default:
+      return json({ error: "Unknown action" }, 400);
+  }
+};
+
+export const config = { path: "/api/data" };
