@@ -1,4 +1,4 @@
-// ===== app.js: setup, server, and login screens =====
+// ===== app.js: setup, server, and login screens ===== 
 const SKEY = 'stbSession';
 let session = JSON.parse(localStorage.getItem(SKEY) || 'null');
 let state = null, screen = 'welcome', joinInfo = null, photos = {}, busy = false;
