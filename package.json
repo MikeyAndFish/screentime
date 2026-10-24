@@ -1,0 +1,9 @@
+{
+  "name": "screentime-bank",
+  "version": "1.0.0",
+  "type": "module",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^0.39.0",
+    "@netlify/blobs": "^8.1.0"
+  }
+}
