@@ -1,6 +1,6 @@
 // ===== parent.js: parent dashboard =====
 
-function parentScreen() { 
+function parentScreen() {
   const s = state;
   const pending = s.subs.filter(x => x.status === 'pending');
   const reviewed = s.subs.filter(x => x.status !== 'pending').slice(0, 10);
