@@ -154,4 +154,13 @@ export default async (req) => {
     comment: auto ? "🤖 Auto-approved by AI" : "",
     date: Date.now()
   };
-  await store("submissions").setJSON(`${fid}/${
+  await store("submissions").setJSON(`${fid}/${id}`, sub);
+
+  if (auto) await addMinutes(fid, sub.kidName, sub.minutes, "🤖 AI approved: " + sub.taskName);
+
+  await emailParent(fam, sub, new URL(req.url).origin);
+
+  return json({ ok: true, status: sub.status, minutes: sub.minutes });
+};
+
+export const config = { path: "/api/submit" };
