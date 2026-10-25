@@ -35,7 +35,7 @@ async function checkWithAI(photo, taskName) {
   try {
     const client = new Anthropic({ apiKey });
     const r = await client.messages.create({
-      model: "claude-sonnet-4-5", // if submissions are slow, try "claude-haiku-4-5"
+            model: Netlify.env.get("ANTHROPIC_MODEL") || "claude-sonnet-4-20250514",
       max_tokens: 200,
       messages: [{
         role: "user",
