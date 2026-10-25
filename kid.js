@@ -1,6 +1,21 @@
-// ===== kid.js: kid screen (live camera only) =====
-let camStream = null, camPhoto = null, camTime = 0;
+// ===== kid.js: kid screen (live camera + optional gallery) =====
+let camStream = null, camPhoto = null, camTime = 0, camSource = 'camera';
 const MAX_PHOTO_AGE = 10 * 60000; // 10 minutes
+
+function kPhotoButtons() {
+  let hint = 'Take a live photo of your finished task.';
+  if (state.allowUploads) {
+    hint = state.galleryAuto
+      ? 'Take a live photo or choose one from your gallery.'
+      : 'Live photos can be auto-approved. Gallery photos always go to your parent.';
+  }
+  return `
+    <button class="wide" onclick="kStartCam()">📷 Open camera</button>
+    ${state.allowUploads ? `
+      <button class="gray wide" onclick="$('gallery').click()">📁 Choose from gallery</button>
+      <input id="gallery" type="file" accept="image/*" style="display:none" onchange="kPickFile(this)">` : ''}
+    <p class="muted center">${hint}</p>`;
+}
 
 function kidScreen() {
   kStopCam();
@@ -40,10 +55,7 @@ function kidScreen() {
         <option value="other">⭐ Other (parent decides minutes)</option>
       </select>
       <textarea id="note" placeholder="What did you do?"></textarea>
-      <div id="camBox">
-        <button class="wide" onclick="kStartCam()">📷 Open camera</button>
-        <p class="muted center">Take a live photo of your finished task.</p>
-      </div>
+      <div id="camBox">${kPhotoButtons()}</div>
       <button id="sendBtn" class="wide" onclick="kSubmit()" disabled>📤 Send to parent</button>
     </div>
 
@@ -88,7 +100,7 @@ function kBeep() {
 }
 
 setInterval(() => {
-  // Turn the camera off if the camera screen is gone (for example, after logging out)
+  // Turn the camera off if the camera view is gone (for example, after logging out)
   if (camStream && !$('camVideo')) kStopCam();
 
   if (!state || state.role !== 'kid') return;
@@ -106,6 +118,23 @@ setInterval(() => {
   refresh();
 }, 1000);
 
+// ---------- Photo preview ----------
+function kShowPreview() {
+  const needsParent = camSource === 'gallery' && !state.galleryAuto;
+  $('camBox').innerHTML = `
+    <img class="proof" src="${camPhoto}" alt="Your photo">
+    ${needsParent ? '<p class="muted center">📁 From gallery: your parent will review it.</p>' : ''}
+    <button class="gray" onclick="kResetPhoto()">🔄 Retake / choose another</button>`;
+  $('sendBtn').disabled = false;
+}
+
+function kResetPhoto() {
+  camPhoto = null;
+  kStopCam();
+  $('camBox').innerHTML = kPhotoButtons();
+  $('sendBtn').disabled = true;
+}
+
 // ---------- Live camera ----------
 async function kStartCam() {
   if (!navigator.mediaDevices?.getUserMedia)
@@ -120,7 +149,8 @@ async function kStartCam() {
   }
   $('camBox').innerHTML = `
     <video id="camVideo" autoplay playsinline muted style="width:100%;border-radius:8px;background:#000"></video>
-    <button class="green wide" onclick="kSnap()">📸 Take photo</button>`;
+    <button class="green wide" onclick="kSnap()">📸 Take photo</button>
+    <button class="gray" onclick="kResetPhoto()">Cancel</button>`;
   $('camVideo').srcObject = camStream;
   $('sendBtn').disabled = true;
 }
@@ -135,11 +165,9 @@ function kSnap() {
   c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
   camPhoto = c.toDataURL('image/jpeg', 0.7);
   camTime = Date.now();
+  camSource = 'camera';
   kStopCam();
-  $('camBox').innerHTML = `
-    <img class="proof" src="${camPhoto}" alt="Your photo">
-    <button class="gray" onclick="kStartCam()">🔄 Retake</button>`;
-  $('sendBtn').disabled = false;
+  kShowPreview();
 }
 
 function kStopCam() {
@@ -147,13 +175,36 @@ function kStopCam() {
   camStream = null;
 }
 
+// ---------- Gallery (only if parent allows) ----------
+function kPickFile(input) {
+  const file = input.files[0];
+  if (!file) return;
+  const reader = new FileReader();
+  reader.onerror = () => alert("Couldn't read that photo. Try another one.");
+  reader.onload = e => {
+    const img = new Image();
+    img.onload = () => {
+      const scale = Math.min(1, 800 / Math.max(img.width, img.height));
+      const c = document.createElement('canvas');
+      c.width = Math.round(img.width * scale);
+      c.height = Math.round(img.height * scale);
+      c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
+      camPhoto = c.toDataURL('image/jpeg', 0.7);
+      camTime = Date.now();
+      camSource = 'gallery';
+      kShowPreview();
+    };
+    img.onerror = () => alert("Couldn't read that photo. Try another one.");
+    img.src = e.target.result;
+  };
+  reader.readAsDataURL(file);
+}
+
 // ---------- Submit a task ----------
 async function kSubmit() {
   if (!camPhoto) return alert('Take a photo of your task first! 📸');
   if (Date.now() - camTime > MAX_PHOTO_AGE) {
-    camPhoto = null;
-    $('sendBtn').disabled = true;
-    $('camBox').innerHTML = `<button class="wide" onclick="kStartCam()">📷 Open camera</button>`;
+    kResetPhoto();
     return alert('That photo is more than 10 minutes old. Please take a new one.');
   }
 
@@ -163,7 +214,7 @@ async function kSubmit() {
 
   const r = await api('/api/submit', {
     token: session.token, tz,
-    taskId: val('task'), note: val('note'), photo: camPhoto
+    taskId: val('task'), note: val('note'), photo: camPhoto, source: camSource
   });
 
   if (r.error) {
