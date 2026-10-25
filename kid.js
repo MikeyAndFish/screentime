@@ -1,6 +1,10 @@
-// ===== kid.js: kid screen =====
+// ===== kid.js: kid screen (live camera only) =====
+let camStream = null, camPhoto = null, camTime = 0;
+const MAX_PHOTO_AGE = 10 * 60000; // 10 minutes
 
 function kidScreen() {
+  kStopCam();
+  camPhoto = null;
   const s = state, k = s.kidName;
   const bal = s.balances[k] || 0;
   const used = s.used[k] || 0;
@@ -14,7 +18,7 @@ function kidScreen() {
     : `
       <input id="spend" type="number" min="1" placeholder="Minutes to use">
       <button class="gray" onclick="$('spend').value=10">10</button>
-      <button class="gray" onclick="$('spend').value=20">20</button>
+      <button class="gray" onclick="$('spend').value=15">15</button>
       <button class="gray" onclick="$('spend').value=30">30</button>
       <button class="green wide" onclick="kSpend()">▶ Start screen time</button>`;
 
@@ -36,8 +40,11 @@ function kidScreen() {
         <option value="other">⭐ Other (parent decides minutes)</option>
       </select>
       <textarea id="note" placeholder="What did you do?"></textarea>
-      <input id="photo" type="file" accept="image/*" capture="environment">
-      <button id="sendBtn" class="wide" onclick="kSubmit()">📤 Send to parent</button>
+      <div id="camBox">
+        <button class="wide" onclick="kStartCam()">📷 Open camera</button>
+        <p class="muted center">Take a live photo of your finished task.</p>
+      </div>
+      <button id="sendBtn" class="wide" onclick="kSubmit()" disabled>📤 Send to parent</button>
     </div>
 
     <div class="card">
@@ -50,17 +57,18 @@ function kidScreen() {
               ${x.status === 'rejected' && x.ai?.reason ? '<br>🤖 ' + esc(x.ai.reason) : ''}</div>
           </div>
           <b class="${x.status}">${x.status === 'approved' ? '+' + x.minutes + ' min' : x.status}</b>
-        </div>`).join('') || '<p class="muted">Nothing yet. Finish a task and send a photo!</p>'}
+        </div>`).join('') || '<p class="muted">Nothing yet. Finish a task and take a photo!</p>'}
     </div>`;
 }
 
 // ---------- Screen time ----------
-function kSpend() {
+async function kSpend() {
   const m = parseInt(val('spend'));
   const bal = state.balances[state.kidName] || 0;
   if (!m || m < 1) return alert('Enter how many minutes');
   if (m > bal) return alert(`Not enough minutes! You have ${bal}.`);
-  act('spend', { minutes: m });
+  const r = await act('spend', { minutes: m });
+  if (r.ok) alert(`▶ Timer started for ${m} min!\n\nIf your phone is locked, tap "Ask For More" so your parent can unlock it. 📱`);
 }
 
 async function kStop() {
@@ -79,8 +87,10 @@ function kBeep() {
   if (navigator.vibrate) navigator.vibrate([300, 100, 300]);
 }
 
-// Update the countdown every second
 setInterval(() => {
+  // Turn the camera off if the camera screen is gone (for example, after logging out)
+  if (camStream && !$('camVideo')) kStopCam();
+
   if (!state || state.role !== 'kid') return;
   const end = state.timers[state.kidName];
   if (!end) return;
@@ -96,52 +106,72 @@ setInterval(() => {
   refresh();
 }, 1000);
 
-// ---------- Submit a task ----------
-// Shrink the photo so uploads are fast and small
-function kResize(file) {
-  return new Promise((resolve, reject) => {
-    const reader = new FileReader();
-    reader.onerror = reject;
-    reader.onload = e => {
-      const img = new Image();
-      img.onerror = reject;
-      img.onload = () => {
-        const scale = Math.min(1, 800 / Math.max(img.width, img.height));
-        const c = document.createElement('canvas');
-        c.width = Math.round(img.width * scale);
-        c.height = Math.round(img.height * scale);
-        c.getContext('2d').drawImage(img, 0, 0, c.width, c.height);
-        resolve(c.toDataURL('image/jpeg', 0.7));
-      };
-      img.src = e.target.result;
-    };
-    reader.readAsDataURL(file);
-  });
+// ---------- Live camera ----------
+async function kStartCam() {
+  if (!navigator.mediaDevices?.getUserMedia)
+    return alert("This browser can't open the camera. Try Safari (iPhone) or Chrome (Android).");
+  kStopCam();
+  try {
+    camStream = await navigator.mediaDevices.getUserMedia({
+      video: { facingMode: 'environment', width: { ideal: 1280 } }, audio: false
+    });
+  } catch (e) {
+    return alert('Camera is blocked. Allow camera access for this website in your browser settings, then try again.');
+  }
+  $('camBox').innerHTML = `
+    <video id="camVideo" autoplay playsinline muted style="width:100%;border-radius:8px;background:#000"></video>
+    <button class="green wide" onclick="kSnap()">📸 Take photo</button>`;
+  $('camVideo').srcObject = camStream;
+  $('sendBtn').disabled = true;
 }
 
+function kSnap() {
+  const v = $('camVideo');
+  if (!v || !v.videoWidth) return alert('The camera is still starting. Try again in a second.');
+  const scale = Math.min(1, 800 / Math.max(v.videoWidth, v.videoHeight));
+  const c = document.createElement('canvas');
+  c.width = Math.round(v.videoWidth * scale);
+  c.height = Math.round(v.videoHeight * scale);
+  c.getContext('2d').drawImage(v, 0, 0, c.width, c.height);
+  camPhoto = c.toDataURL('image/jpeg', 0.7);
+  camTime = Date.now();
+  kStopCam();
+  $('camBox').innerHTML = `
+    <img class="proof" src="${camPhoto}" alt="Your photo">
+    <button class="gray" onclick="kStartCam()">🔄 Retake</button>`;
+  $('sendBtn').disabled = false;
+}
+
+function kStopCam() {
+  if (camStream) camStream.getTracks().forEach(t => t.stop());
+  camStream = null;
+}
+
+// ---------- Submit a task ----------
 async function kSubmit() {
-  const file = $('photo').files[0];
-  if (!file) return alert('Please take a photo as proof! 📸');
+  if (!camPhoto) return alert('Take a photo of your task first! 📸');
+  if (Date.now() - camTime > MAX_PHOTO_AGE) {
+    camPhoto = null;
+    $('sendBtn').disabled = true;
+    $('camBox').innerHTML = `<button class="wide" onclick="kStartCam()">📷 Open camera</button>`;
+    return alert('That photo is more than 10 minutes old. Please take a new one.');
+  }
+
   const btn = $('sendBtn');
   btn.disabled = true;
   btn.textContent = '⏳ Sending...';
 
-  let photo;
-  try { photo = await kResize(file); }
-  catch (e) {
-    btn.disabled = false; btn.textContent = '📤 Send to parent';
-    return alert("Couldn't read that photo. Try another one.");
-  }
-
   const r = await api('/api/submit', {
     token: session.token, tz,
-    taskId: val('task'), note: val('note'), photo
+    taskId: val('task'), note: val('note'), photo: camPhoto
   });
 
   if (r.error) {
-    btn.disabled = false; btn.textContent = '📤 Send to parent';
+    btn.disabled = false;
+    btn.textContent = '📤 Send to parent';
     return alert(r.error);
   }
+  camPhoto = null;
   if (r.status === 'approved') alert(`🤖 AI approved it! +${r.minutes} minutes added 🎉`);
   else alert('Sent! Waiting for your parent to approve ✅');
   refresh();
