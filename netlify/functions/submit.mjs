@@ -60,7 +60,7 @@ Reply ONLY with JSON:
     };
   } catch (e) {
     console.log("AI check failed:", e.message);
-    return { match: false, confidence: "low", isScreenshot: false, reason: "AI check didn't work, so a parent will review it." };
+        return { match: false, confidence: "low", isScreenshot: false, reason: "AI check didn't work: " + String(e.message).slice(0, 150) };
   }
 }
 
