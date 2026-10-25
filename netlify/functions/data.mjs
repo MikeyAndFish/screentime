@@ -72,7 +72,8 @@ export default async (req) => {
 
   const action = body.action;
   const parentOnly = ["approve", "reject", "bonus", "addKid", "removeKid",
-                      "addTask", "removeTask", "setAuto", "setLimit"];
+                      "addTask", "removeTask", "setAuto", "setLimit", "setUploads", "setGalleryAuto"];
+
   if (parentOnly.includes(action) && !isParent)
     return json({ error: "Only a parent can do that" }, 403);
 
