@@ -56,7 +56,7 @@ async function checkWithAI(photo, taskName) {
     const client = new Anthropic({ apiKey });
     const r = await client.messages.create({
       model,
-      max_tokens: 200,
+      max_tokens: 1000,
       messages: [{
         role: "user",
         content: [
@@ -71,7 +71,18 @@ Reply ONLY with JSON:
         ]
       }]
     });
-    const ai = JSON.parse(r.content[0].text.match(/\{[\s\S]*\}/)[0]);
+
+    // Collect the text from every part of the reply (not just the first part)
+    const blocks = Array.isArray(r.content) ? r.content : [];
+    const text = blocks.filter((b) => b && b.type === "text" && typeof b.text === "string")
+                       .map((b) => b.text).join("\n");
+    const found = text.match(/\{[\s\S]*\}/);
+    if (!found) {
+      const types = blocks.map((b) => b?.type).join(",") || "none";
+      throw new Error(`No answer found (stop: ${r.stop_reason}, parts: ${types}) ${text.slice(0, 80)}`);
+    }
+
+    const ai = JSON.parse(found[0]);
     return {
       match: ai.match === true,
       confidence: ["high", "medium", "low"].includes(ai.confidence) ? ai.confidence : "low",
@@ -85,6 +96,7 @@ Reply ONLY with JSON:
       reason: `AI check didn't work (model: ${model}): ` + String(e.message).slice(0, 150) };
   }
 }
+
 
 // ---------- Email (only runs if RESEND_API_KEY is set) ----------
 async function emailParent(fam, sub, origin) {
