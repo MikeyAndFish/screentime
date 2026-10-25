@@ -25,7 +25,7 @@ async function getLog(fid) {
 async function addLog(fid, entry) {
   const log = await getLog(fid);
   log.unshift({ ...entry, date: Date.now() });
-  await store("logs").setJSON(fid, log.slice(0, 300)); // keep newest 300
+  await store("logs").setJSON(fid, log.slice(0, 300));
 }
 
 // ---------- Balances (one per kid, per family) ----------
@@ -56,7 +56,6 @@ export default async (req) => {
   let body;
   try { body = await req.json(); } catch { return json({ error: "Bad request" }, 400); }
 
-  // Who is this?
   const session = await getSession(body.token);
   if (!session) return json({ error: "Please log in again", loggedOut: true }, 401);
 
@@ -66,14 +65,13 @@ export default async (req) => {
   const fid = fam.id;
   const isParent = session.role === "parent";
 
-  // If a parent removed this kid, log them out
   if (!isParent && !fam.kids.includes(session.kidName))
     return json({ error: "You were removed from this family", loggedOut: true }, 401);
 
   const action = body.action;
   const parentOnly = ["approve", "reject", "bonus", "addKid", "removeKid",
-                      "addTask", "removeTask", "setAuto", "setLimit", "setUploads", "setGalleryAuto"];
-
+                      "addTask", "removeTask", "setAuto", "setLimit",
+                      "setUploads", "setGalleryAuto"];
   if (parentOnly.includes(action) && !isParent)
     return json({ error: "Only a parent can do that" }, 403);
 
@@ -92,7 +90,6 @@ export default async (req) => {
       const balances = {};
       for (const k of fam.kids) balances[k] = await getBalance(fid, k);
 
-      // Only this family's submissions
       const subStore = store("submissions");
       const { blobs } = await subStore.list({ prefix: fid + "/" });
       let subs = (await Promise.all(blobs.map((b) => subStore.get(b.key, { type: "json" }))))
@@ -105,7 +102,6 @@ export default async (req) => {
       const log = await getLog(fid);
       const used = Object.fromEntries(fam.kids.map((k) => [k, usedToday(log, k, tz)]));
 
-      // Only send timers that are still running
       const timers = {};
       for (const k in fam.timers) if (fam.timers[k] > Date.now()) timers[k] = fam.timers[k];
 
@@ -117,6 +113,8 @@ export default async (req) => {
         kids: fam.kids,
         tasks: fam.tasks,
         dailyLimit: fam.dailyLimit,
+        allowUploads: !!fam.allowUploads,
+        galleryAuto: !!fam.galleryAuto,
         timers, balances, used, subs,
         log: isParent ? log.slice(0, 30) : []
       });
@@ -226,7 +224,6 @@ export default async (req) => {
     }
 
     case "setAuto": {
-      // Turn AI auto-approve on or off for one task
       const t = fam.tasks.find((x) => x.id === body.id);
       if (!t) return json({ error: "Task not found" }, 404);
       t.autoApprove = !!body.autoApprove;
@@ -237,6 +234,19 @@ export default async (req) => {
     case "setLimit": {
       const v = parseInt(body.limit);
       fam.dailyLimit = isNaN(v) || v < 0 ? 0 : v;
+      await saveFamily(fam);
+      return json({ ok: true });
+    }
+
+    case "setUploads": {
+      fam.allowUploads = !!body.allowUploads;
+      if (!fam.allowUploads) fam.galleryAuto = false; // turning off uploads also turns off gallery auto-approve
+      await saveFamily(fam);
+      return json({ ok: true });
+    }
+
+    case "setGalleryAuto": {
+      fam.galleryAuto = !!body.galleryAuto;
       await saveFamily(fam);
       return json({ ok: true });
     }
