@@ -61,6 +61,17 @@ function parentScreen() {
       <label>Daily screen time limit (minutes, 0 = no limit)</label>
       <input id="limit" type="number" min="0" value="${s.dailyLimit}">
       <button onclick="pSetLimit()">Save limit</button>
+
+      <hr style="border:none;border-top:1px solid #eee;margin:14px 0">
+
+      <label class="check"><input type="checkbox" ${s.allowUploads ? 'checked' : ''}
+        onchange="pSetUploads(this.checked)"> 📁 Let kids upload photos from their gallery</label>
+      ${s.allowUploads ? `
+        <label class="check"><input type="checkbox" ${s.galleryAuto ? 'checked' : ''}
+          onchange="pSetGalleryAuto(this.checked)"> 🤖 Let AI auto-approve gallery photos</label>
+        <p class="muted">Off = gallery photos always come to you. On = AI can approve them too
+          (less safe, since old or internet photos are harder to catch).</p>`
+      : '<p class="muted">Off = live camera only (safest).</p>'}
     </div>
 
     <div class="card">
@@ -68,6 +79,7 @@ function parentScreen() {
       ${reviewed.map(x => `
         <div class="row">
           <div>${esc(x.kidName)} – ${esc(x.taskName)}
+            ${x.source === 'gallery' ? ' <span class="muted">📁</span>' : ''}
             <div class="muted">${when(x.date)}${x.comment ? ' · 💬 ' + esc(x.comment) : ''}</div>
           </div>
           <b class="${x.status}">${x.status === 'approved' ? '+' + x.minutes + ' min' : x.status}</b>
@@ -89,13 +101,16 @@ function parentScreen() {
 }
 
 function pendingCard(x) {
-  const ai = x.ai ? `<p>🤖 AI: ${esc(x.ai.reason)} <span class="muted">(${esc(x.ai.confidence)} confidence)</span></p>` : '';
+  const ai = x.ai
+    ? `<p>🤖 AI: ${esc(x.ai.reason)} <span class="muted">(${esc(x.ai.confidence)} confidence${x.ai.isScreenshot ? ', ⚠️ might be a screenshot' : ''})</span></p>`
+    : '';
   return `
     <div class="card">
       <b>${esc(x.kidName)}</b> – ${esc(x.taskName)}
       <div class="muted">${when(x.date)}</div>
       ${x.note ? `<p>${esc(x.note)}</p>` : ''}
       ${ai}
+      ${x.source === 'gallery' ? '<p>📁 <b>From gallery</b> (not a live photo)</p>' : ''}
       <img class="proof" id="img_${x.id}" alt="Loading photo...">
       <input id="c_${x.id}" placeholder="Comment for your kid (optional)">
       ${x.minutes ? `<button class="green" onclick="pApprove('${x.id}', ${x.minutes})">✅ Approve +${x.minutes} min</button>` : ''}
@@ -155,6 +170,12 @@ function pToggleAuto(id, on) {
 }
 function pSetLimit() {
   act('setLimit', { limit: val('limit') }, 'Daily limit saved ✅');
+}
+function pSetUploads(on) {
+  act('setUploads', { allowUploads: on });
+}
+function pSetGalleryAuto(on) {
+  act('setGalleryAuto', { galleryAuto: on });
 }
 
 // end of parent.js
