@@ -28,14 +28,34 @@ async function addMinutes(fid, kid, m, reason) {
   await logs.setJSON(fid, log.slice(0, 300));
 }
 
+// ---------- Pick a model your account can use ----------
+let cachedModel = null;
+async function pickModel(apiKey) {
+  const fromEnv = Netlify.env.get("ANTHROPIC_MODEL");
+  if (fromEnv) return fromEnv;
+  if (cachedModel) return cachedModel;
+
+  const r = await fetch("https://api.anthropic.com/v1/models?limit=100", {
+    headers: { "x-api-key": apiKey, "anthropic-version": "2023-06-01" }
+  });
+  if (!r.ok) throw new Error("Couldn't list models (" + r.status + "): " + (await r.text()).slice(0, 100));
+  const { data = [] } = await r.json();
+  const ids = data.map((m) => m.id); // newest first
+  cachedModel = ids.find((id) => id.includes("sonnet")) || ids.find((id) => id.includes("haiku")) || ids[0];
+  if (!cachedModel) throw new Error("No models available on this account");
+  return cachedModel;
+}
+
 // ---------- AI check (only runs if ANTHROPIC_API_KEY is set) ----------
 async function checkWithAI(photo, taskName) {
   const apiKey = Netlify.env.get("ANTHROPIC_API_KEY");
   if (!apiKey) return null;
+  let model = "unknown";
   try {
+    model = await pickModel(apiKey);
     const client = new Anthropic({ apiKey });
     const r = await client.messages.create({
-                  model: Netlify.env.get("ANTHROPIC_MODEL") || "claude-sonnet-4-20250514",
+      model,
       max_tokens: 200,
       messages: [{
         role: "user",
@@ -56,11 +76,13 @@ Reply ONLY with JSON:
       match: ai.match === true,
       confidence: ["high", "medium", "low"].includes(ai.confidence) ? ai.confidence : "low",
       isScreenshot: ai.isScreenshot === true,
-      reason: String(ai.reason || "").slice(0, 200)
+      reason: String(ai.reason || "").slice(0, 200),
+      model
     };
   } catch (e) {
-    console.log("AI check failed:", e.message);
-        return { match: false, confidence: "low", isScreenshot: false, reason: "AI check didn't work: " + String(e.message).slice(0, 150) };
+    console.log("AI check failed:", model, e.message);
+    return { match: false, confidence: "low", isScreenshot: false, model,
+      reason: `AI check didn't work (model: ${model}): ` + String(e.message).slice(0, 150) };
   }
 }
 
